@@ -4,10 +4,11 @@ numpy
 tqdm
 tensorboard
 tensorboardX
-ml-collections
-medpy
-SimpleITK
 scipy
 h5py
+rasterio
 timm
 einops
+pytorch-lightning
+yacs
+ml-collections

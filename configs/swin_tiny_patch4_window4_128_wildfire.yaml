@@ -1,0 +1,28 @@
+MODEL:
+  TYPE: swin
+  NAME: swin_tiny_patch4_window4_128_wildfire
+  # No pretrained checkpoint — patch embedding shape (in_chans) differs from ImageNet weights.
+  PRETRAIN_CKPT: ~
+  DROP_RATE: 0.0
+  DROP_PATH_RATE: 0.1
+  SWIN:
+    FINAL_UPSAMPLE: "expand_first"
+    # IN_CHANS is set dynamically at runtime to n_leading_observations * 40.
+    # Default below matches n_leading_observations=1.
+    IN_CHANS: 40
+    PATCH_SIZE: 4
+    EMBED_DIM: 96
+    DEPTHS: [ 2, 2, 2, 2 ]
+    DECODER_DEPTHS: [ 2, 2, 2, 1 ]
+    NUM_HEADS: [ 3, 6, 12, 24 ]
+    # window_size=4 works with img_size=128:
+    #   128 / patch_size(4) = 32 patches per side
+    #   stages: 32 -> 16 -> 8 -> 4, all divisible by window_size=4
+    WINDOW_SIZE: 4
+    MLP_RATIO: 4.
+    QKV_BIAS: True
+    QK_SCALE: ~
+    APE: False
+    PATCH_NORM: True
+DATA:
+  IMG_SIZE: 128
