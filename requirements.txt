@@ -12,3 +12,4 @@ einops
 pytorch-lightning
 yacs
 ml-collections
+scikit-learn

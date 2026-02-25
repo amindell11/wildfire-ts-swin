@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.metrics import average_precision_score
 
 
 class DiceLoss(nn.Module):
@@ -60,3 +61,10 @@ def compute_binary_metrics(pred: np.ndarray, gt: np.ndarray):
 
     return {"precision": float(precision), "recall": float(recall),
             "f1": float(f1), "iou": float(iou)}
+
+
+def compute_ap(probs: np.ndarray, gt: np.ndarray) -> float:
+    """Average Precision for the fire class. probs are softmax scores in [0,1]."""
+    if gt.sum() == 0:
+        return 0.0
+    return float(average_precision_score(gt, probs))

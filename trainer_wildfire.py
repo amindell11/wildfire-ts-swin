@@ -6,7 +6,7 @@ Loss: weighted CrossEntropy + Dice on the fire class.
     by class frequency to avoid the model predicting all-no-fire.
   - Dice is computed only on the fire class (class 1).
 
-Best model is selected by validation F1 on the fire class.
+Best model is selected by validation AP (Average Precision) on the fire class.
 """
 import logging
 import os
@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from datasets.wildfire import WildfireDataset, get_year_split
-from utils import DiceLoss, compute_binary_metrics
+from utils import DiceLoss, compute_binary_metrics, compute_ap
 
 
 def _make_loader(dataset, batch_size, shuffle, num_workers):
@@ -90,7 +90,7 @@ def trainer_wildfire(args, model, snapshot_path):
 
     writer = SummaryWriter(os.path.join(snapshot_path, 'log'))
     iter_num = 0
-    best_val_f1 = -1.0
+    best_val_ap = -1.0
     max_iterations = args.max_epochs * len(train_loader)
 
     for epoch in tqdm(range(args.max_epochs), ncols=70):
@@ -136,7 +136,7 @@ def trainer_wildfire(args, model, snapshot_path):
 
         model.eval()
         val_ce = val_dice = 0.0
-        all_preds, all_gts = [], []
+        all_preds, all_probs, all_gts = [], [], []
 
         with torch.no_grad():
             for x_batch, y_batch in tqdm(val_loader, desc=f"Val {epoch}", leave=False):
@@ -147,8 +147,10 @@ def trainer_wildfire(args, model, snapshot_path):
                 val_ce   += ce_loss_fn(logits, y_batch).item()
                 val_dice += dice_loss_fn(logits, y_batch, softmax=True).item()
 
-                preds = torch.argmax(logits, dim=1).cpu().numpy()
+                probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+                preds = (probs >= 0.5).astype(np.int64)
                 gts   = y_batch.cpu().numpy()
+                all_probs.append(probs.flatten())
                 all_preds.append(preds.flatten())
                 all_gts.append(gts.flatten())
 
@@ -156,30 +158,33 @@ def trainer_wildfire(args, model, snapshot_path):
         val_dice /= len(val_loader)
         val_loss  = 0.4 * val_ce + 0.6 * val_dice
 
+        all_probs = np.concatenate(all_probs)
         all_preds = np.concatenate(all_preds)
         all_gts   = np.concatenate(all_gts)
         metrics = compute_binary_metrics(all_preds, all_gts)
+        ap = compute_ap(all_probs, all_gts)
 
         logging.info(
             f"Val   epoch {epoch}: loss={val_loss:.4f}  CE={val_ce:.4f}  Dice={val_dice:.4f}  "
-            f"F1={metrics['f1']:.4f}  IoU={metrics['iou']:.4f}  "
+            f"AP={ap:.4f}  F1={metrics['f1']:.4f}  IoU={metrics['iou']:.4f}  "
             f"Prec={metrics['precision']:.4f}  Rec={metrics['recall']:.4f}"
         )
         writer.add_scalar('val/loss',      val_loss,            epoch)
+        writer.add_scalar('val/ap',        ap,                  epoch)
         writer.add_scalar('val/f1',        metrics['f1'],       epoch)
         writer.add_scalar('val/iou',       metrics['iou'],      epoch)
         writer.add_scalar('val/precision', metrics['precision'], epoch)
         writer.add_scalar('val/recall',    metrics['recall'],   epoch)
 
-        if metrics['f1'] > best_val_f1:
-            best_val_f1 = metrics['f1']
+        if ap > best_val_ap:
+            best_val_ap = ap
             ckpt_path = os.path.join(snapshot_path, 'best_model.pth')
             torch.save(model.state_dict(), ckpt_path)
-            logging.info(f"  -> New best F1={best_val_f1:.4f}, saved to {ckpt_path}")
+            logging.info(f"  -> New best AP={best_val_ap:.4f}, saved to {ckpt_path}")
         else:
             ckpt_path = os.path.join(snapshot_path, 'last_model.pth')
             torch.save(model.state_dict(), ckpt_path)
 
     writer.close()
-    logging.info(f"Training finished. Best val F1: {best_val_f1:.4f}")
+    logging.info(f"Training finished. Best val AP: {best_val_ap:.4f}")
     return "Training Finished!"
