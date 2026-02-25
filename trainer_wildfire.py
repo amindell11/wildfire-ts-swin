@@ -1,10 +1,9 @@
 """
 Training loop for SwinUnet on the WildfireSpreadTS dataset.
 
-Loss: weighted CrossEntropy + Dice on the fire class.
-  - Fire pixels are very rare (~1% of all pixels), so CE is weighted inversely
-    by class frequency to avoid the model predicting all-no-fire.
-  - Dice is computed only on the fire class (class 1).
+Loss: Focal Loss (alpha = inverse fire-pixel frequency, gamma = 2.0).
+  - Fire pixels are very rare (~1% of all pixels); focal loss down-weights
+    easy examples and focuses on hard positives.
 
 Best model is selected by validation AP (Average Precision) on the fire class.
 """
@@ -21,7 +20,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from datasets.wildfire import WildfireDataset, get_year_split
-from utils import DiceLoss, compute_binary_metrics, compute_ap
+from utils import FocalLoss, compute_binary_metrics, compute_ap
 
 
 def _make_loader(dataset, batch_size, shuffle, num_workers):
@@ -76,13 +75,11 @@ def trainer_wildfire(args, model, snapshot_path):
         model = nn.DataParallel(model)
 
     # --- Loss ---
-    # CE weight: upweight the fire class relative to no-fire.
-    # A rough heuristic: fire pixels are ~1% of total → weight ~[1, 99].
-    # Clipped to [1, 50] to avoid instability early in training.
-    fire_weight = min(50.0, 1.0 / 0.01)
-    ce_weights = torch.tensor([1.0, fire_weight], dtype=torch.float32).cuda()
-    ce_loss_fn   = nn.CrossEntropyLoss(weight=ce_weights)
-    dice_loss_fn = DiceLoss(n_classes=2)
+    # Focal loss: alpha = inverse fire-pixel frequency (paper convention).
+    # Fire pixels ~1% → alpha_fire ~100, clipped to 50 for stability.
+    fire_alpha = min(50.0, 1.0 / 0.01)
+    alpha = torch.tensor([1.0, fire_alpha], dtype=torch.float32).cuda()
+    focal_loss_fn = FocalLoss(alpha=alpha, gamma=args.focal_gamma)
 
     optimizer = optim.AdamW(model.parameters(), lr=args.base_lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -96,16 +93,14 @@ def trainer_wildfire(args, model, snapshot_path):
     for epoch in tqdm(range(args.max_epochs), ncols=70):
         # ---- Train ----
         model.train()
-        train_ce = train_dice = 0.0
+        train_loss = 0.0
 
         for x_batch, y_batch in tqdm(train_loader, desc=f"Train {epoch}", leave=False):
             x_batch = x_batch.cuda()
             y_batch = y_batch.cuda()
 
             logits = model(x_batch)                          # (B, 2, H, W)
-            loss_ce   = ce_loss_fn(logits, y_batch)
-            loss_dice = dice_loss_fn(logits, y_batch, softmax=True)
-            loss = 0.4 * loss_ce + 0.6 * loss_dice
+            loss = focal_loss_fn(logits, y_batch)
 
             optimizer.zero_grad()
             loss.backward()
@@ -116,17 +111,12 @@ def trainer_wildfire(args, model, snapshot_path):
             for pg in optimizer.param_groups:
                 pg['lr'] = lr_
 
-            train_ce   += loss_ce.item()
-            train_dice += loss_dice.item()
-            writer.add_scalar('train/loss_ce',   loss_ce.item(),   iter_num)
-            writer.add_scalar('train/loss_dice', loss_dice.item(), iter_num)
+            train_loss += loss.item()
+            writer.add_scalar('train/loss_focal', loss.item(), iter_num)
             iter_num += 1
 
-        train_ce   /= len(train_loader)
-        train_dice /= len(train_loader)
-        train_loss  = 0.4 * train_ce + 0.6 * train_dice
-        logging.info(
-            f"Train epoch {epoch}: loss={train_loss:.4f}  CE={train_ce:.4f}  Dice={train_dice:.4f}")
+        train_loss /= len(train_loader)
+        logging.info(f"Train epoch {epoch}: loss={train_loss:.4f}")
 
         scheduler.step()
 
@@ -135,7 +125,7 @@ def trainer_wildfire(args, model, snapshot_path):
             continue
 
         model.eval()
-        val_ce = val_dice = 0.0
+        val_focal = 0.0
         all_preds, all_probs, all_gts = [], [], []
 
         with torch.no_grad():
@@ -144,8 +134,7 @@ def trainer_wildfire(args, model, snapshot_path):
                 y_batch = y_batch.cuda()
 
                 logits = model(x_batch)
-                val_ce   += ce_loss_fn(logits, y_batch).item()
-                val_dice += dice_loss_fn(logits, y_batch, softmax=True).item()
+                val_focal += focal_loss_fn(logits, y_batch).item()
 
                 probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
                 preds = (probs >= 0.5).astype(np.int64)
@@ -154,9 +143,8 @@ def trainer_wildfire(args, model, snapshot_path):
                 all_preds.append(preds.flatten())
                 all_gts.append(gts.flatten())
 
-        val_ce   /= len(val_loader)
-        val_dice /= len(val_loader)
-        val_loss  = 0.4 * val_ce + 0.6 * val_dice
+        val_focal /= len(val_loader)
+        val_loss = val_focal
 
         all_probs = np.concatenate(all_probs)
         all_preds = np.concatenate(all_preds)
@@ -165,7 +153,7 @@ def trainer_wildfire(args, model, snapshot_path):
         ap = compute_ap(all_probs, all_gts)
 
         logging.info(
-            f"Val   epoch {epoch}: loss={val_loss:.4f}  CE={val_ce:.4f}  Dice={val_dice:.4f}  "
+            f"Val   epoch {epoch}: loss={val_loss:.4f}  "
             f"AP={ap:.4f}  F1={metrics['f1']:.4f}  IoU={metrics['iou']:.4f}  "
             f"Prec={metrics['precision']:.4f}  Rec={metrics['recall']:.4f}"
         )

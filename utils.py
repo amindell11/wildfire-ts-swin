@@ -1,7 +1,22 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.metrics import average_precision_score
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha: torch.Tensor, gamma: float = 2.0):
+        super().__init__()
+        self.register_buffer('alpha', alpha)  # shape (C,), one weight per class
+        self.gamma = gamma
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # inputs: (B, C, H, W) logits  |  targets: (B, H, W) long
+        ce = F.cross_entropy(inputs, targets, reduction='none')  # (B, H, W)
+        pt = torch.exp(-ce)
+        alpha_t = self.alpha[targets]  # (B, H, W)
+        return (alpha_t * (1 - pt) ** self.gamma * ce).mean()
 
 
 class DiceLoss(nn.Module):

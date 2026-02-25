@@ -55,6 +55,8 @@ parser.add_argument('--eval_interval', type=int, default=1,
                     help='Run validation every N epochs')
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--n_gpu', type=int, default=1)
+parser.add_argument('--focal_gamma', type=float, default=2.0,
+                    help='Focal loss gamma (focusing parameter). Paper uses 2.0.')
 
 # --- Swin config (passed through to yacs) ---
 parser.add_argument('--cfg', type=str,
