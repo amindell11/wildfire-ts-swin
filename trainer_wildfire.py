@@ -17,7 +17,6 @@ import torch.nn as nn
 import torch.optim as optim
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
 
 from datasets.wildfire import WildfireDataset, get_year_split
 from utils import FocalLoss, compute_binary_metrics, compute_ap
@@ -57,9 +56,8 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
         log.addHandler(_fh)
 
     def _log(msg):
-        """Write to log file and print to console via tqdm so bars aren't garbled."""
         log.info(msg)
-        tqdm.write(msg)
+        print(msg, flush=True)
 
     _log(str(args))
 
@@ -112,15 +110,13 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
     best_val_ap = -1.0
     max_iterations = args.max_epochs * len(train_loader)
 
-    epoch_bar = tqdm(range(args.max_epochs), desc="Epochs", unit="ep", ncols=90)
-    for epoch in epoch_bar:
+    for epoch in range(args.max_epochs):
         # ---- Train ----
         model.train()
         train_loss = 0.0
+        n_batches = len(train_loader)
 
-        batch_bar = tqdm(train_loader, desc=f"  Train", unit="batch",
-                         leave=False, ncols=90)
-        for x_batch, y_batch in batch_bar:
+        for i, (x_batch, y_batch) in enumerate(train_loader):
             x_batch = x_batch.to(device)
             y_batch = y_batch.to(device)
 
@@ -141,7 +137,10 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
             train_loss += loss.item()
             writer.add_scalar('train/loss_focal', loss.item(), iter_num)
             iter_num += 1
-            batch_bar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{lr_:.2e}")
+
+            if (i + 1) % max(1, n_batches // 5) == 0 or (i + 1) == n_batches:
+                print(f"  Epoch {epoch:03d}  batch {i+1:03d}/{n_batches}"
+                      f"  loss={loss.item():.4f}  lr={lr_:.2e}", flush=True)
 
         train_loss /= len(train_loader)
         _log(f"Epoch {epoch:03d}  train_loss={train_loss:.4f}")
@@ -150,7 +149,6 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
 
         # ---- Validation ----
         if (epoch + 1) % args.eval_interval != 0:
-            epoch_bar.set_postfix(train_loss=f"{train_loss:.4f}")
             continue
 
         model.eval()
@@ -158,8 +156,7 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
         all_preds, all_probs, all_gts = [], [], []
 
         with torch.no_grad():
-            for x_batch, y_batch in tqdm(val_loader, desc=f"  Val  ",
-                                         unit="batch", leave=False, ncols=90):
+            for x_batch, y_batch in val_loader:
                 x_batch = x_batch.to(device)
                 y_batch = y_batch.to(device)
 
@@ -182,17 +179,11 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
         metrics = compute_binary_metrics(all_preds, all_gts)
         ap = compute_ap(all_probs, all_gts)
 
-        star = " *" if ap > best_val_ap else ""
+        star = " <-- new best" if ap > best_val_ap else ""
         _log(
             f"Epoch {epoch:03d}  val_loss={val_loss:.4f}  "
             f"AP={ap:.4f}  F1={metrics['f1']:.4f}  "
             f"Prec={metrics['precision']:.4f}  Rec={metrics['recall']:.4f}{star}"
-        )
-        epoch_bar.set_postfix(
-            loss=f"{train_loss:.4f}",
-            AP=f"{ap:.4f}",
-            F1=f"{metrics['f1']:.4f}",
-            best=f"{max(ap, best_val_ap):.4f}",
         )
 
         writer.add_scalar('val/loss',      val_loss,            epoch)
