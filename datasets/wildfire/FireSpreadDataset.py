@@ -288,11 +288,9 @@ class FireSpreadDataset(Dataset):
         return x, y
 
     def center_crop_x32(self, x, y):
-        T, C, H, W = x.shape
-        H_new = H // 32 * 32
-        W_new = W // 32 * 32
-        x = TF.center_crop(x, (H_new, W_new))
-        y = TF.center_crop(y, (H_new, W_new))
+        crop = (self.crop_side_length // 32) * 32
+        x = TF.center_crop(x, (crop, crop))
+        y = TF.center_crop(y, (crop, crop))
         return x, y
 
     def flatten_and_remove_duplicate_features_(self, x):
