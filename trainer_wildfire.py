@@ -23,15 +23,28 @@ from datasets.wildfire import WildfireDataset, get_year_split
 from utils import FocalLoss, compute_binary_metrics, compute_ap
 
 
-def _make_loader(dataset, batch_size, shuffle, num_workers):
+def _make_loader(dataset, batch_size, shuffle, num_workers, pin_memory=True):
     return DataLoader(
         dataset, batch_size=batch_size, shuffle=shuffle,
-        num_workers=num_workers, pin_memory=True,
+        num_workers=num_workers, pin_memory=pin_memory,
         drop_last=shuffle,  # drop last incomplete batch only during training
     )
 
 
-def trainer_wildfire(args, model, snapshot_path):
+def trainer_wildfire(args, model, snapshot_path, device=None):
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # XLA (TPU) support: pin_memory must be False and mark_step() is needed
+    _xm = None
+    try:
+        import torch_xla.core.xla_model as xm
+        if 'xla' in str(device):
+            _xm = xm
+    except ImportError:
+        pass
+    pin_memory = _xm is None and str(device) != 'cpu'
+
     logging.basicConfig(
         filename=os.path.join(snapshot_path, "log.txt"),
         level=logging.INFO,
@@ -67,9 +80,9 @@ def trainer_wildfire(args, model, snapshot_path):
     logging.info(f"Train samples: {len(db_train)}  Val samples: {len(db_val)}")
 
     train_loader = _make_loader(db_train, args.batch_size, shuffle=True,
-                                num_workers=args.num_workers)
+                                num_workers=args.num_workers, pin_memory=pin_memory)
     val_loader   = _make_loader(db_val,   args.batch_size, shuffle=False,
-                                num_workers=args.num_workers)
+                                num_workers=args.num_workers, pin_memory=pin_memory)
 
     if args.n_gpu > 1:
         model = nn.DataParallel(model)
@@ -78,7 +91,7 @@ def trainer_wildfire(args, model, snapshot_path):
     # Focal loss: alpha = inverse fire-pixel frequency (paper convention).
     # Fire pixels ~1% → alpha_fire ~100, clipped to 50 for stability.
     fire_alpha = min(50.0, 1.0 / 0.01)
-    alpha = torch.tensor([1.0, fire_alpha], dtype=torch.float32).cuda()
+    alpha = torch.tensor([1.0, fire_alpha], dtype=torch.float32).to(device)
     focal_loss_fn = FocalLoss(alpha=alpha, gamma=args.focal_gamma)
 
     optimizer = optim.AdamW(model.parameters(), lr=args.base_lr, weight_decay=1e-4)
@@ -96,8 +109,8 @@ def trainer_wildfire(args, model, snapshot_path):
         train_loss = 0.0
 
         for x_batch, y_batch in tqdm(train_loader, desc=f"Train {epoch}", leave=False):
-            x_batch = x_batch.cuda()
-            y_batch = y_batch.cuda()
+            x_batch = x_batch.to(device)
+            y_batch = y_batch.to(device)
 
             logits = model(x_batch)                          # (B, 2, H, W)
             loss = focal_loss_fn(logits, y_batch)
@@ -105,6 +118,8 @@ def trainer_wildfire(args, model, snapshot_path):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            if _xm is not None:
+                _xm.mark_step()
 
             # Poly-style LR within epoch (in addition to cosine between epochs)
             lr_ = args.base_lr * (1.0 - iter_num / max_iterations) ** 0.9
@@ -130,8 +145,8 @@ def trainer_wildfire(args, model, snapshot_path):
 
         with torch.no_grad():
             for x_batch, y_batch in tqdm(val_loader, desc=f"Val {epoch}", leave=False):
-                x_batch = x_batch.cuda()
-                y_batch = y_batch.cuda()
+                x_batch = x_batch.to(device)
+                y_batch = y_batch.to(device)
 
                 logits = model(x_batch)
                 val_focal += focal_loss_fn(logits, y_batch).item()
