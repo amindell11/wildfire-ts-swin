@@ -106,12 +106,32 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.max_epochs, eta_min=args.base_lr * 1e-2)
 
-    writer = SummaryWriter(os.path.join(snapshot_path, 'log'))
+    start_epoch = 0
     iter_num = 0
     best_val_ap = -1.0
+    checkpoint_interval = getattr(args, 'checkpoint_interval', 10)
+
+    if getattr(args, 'resume', None):
+        _log(f"Resuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device)
+        raw_model = model.module if isinstance(model, nn.DataParallel) else model
+        m_state = ckpt.get('model_state', ckpt)
+        if next(iter(m_state)).startswith('module.'):
+            m_state = {k[len('module.'):]: v for k, v in m_state.items()}
+        raw_model.load_state_dict(m_state)
+        start_epoch = ckpt.get('epoch', -1) + 1
+        iter_num    = ckpt.get('iter_num', 0)
+        best_val_ap = ckpt.get('best_val_ap', -1.0)
+        if 'optimizer_state' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer_state'])
+        if 'scheduler_state' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state'])
+        _log(f"  -> Resumed at epoch {start_epoch}, iter {iter_num}, best_val_ap={best_val_ap:.4f}")
+
+    writer = SummaryWriter(os.path.join(snapshot_path, 'log'))
     max_iterations = args.max_epochs * len(train_loader)
 
-    epoch_bar = tqdm(range(args.max_epochs), desc="Epochs", unit="ep", ncols=90)
+    epoch_bar = tqdm(range(start_epoch, args.max_epochs), desc="Epochs", unit="ep", ncols=90)
     for epoch in epoch_bar:
         # ---- Train ----
         model.train()
@@ -146,6 +166,20 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
         _log(f"Epoch {epoch:03d}  train_loss={train_loss:.4f}")
 
         scheduler.step()
+
+        # ---- Periodic checkpoint (full training state) ----
+        if (epoch + 1) % checkpoint_interval == 0:
+            raw_model = model.module if isinstance(model, nn.DataParallel) else model
+            ckpt_file = os.path.join(snapshot_path, f'checkpoint_epoch{epoch:03d}.pth')
+            torch.save({
+                'epoch':           epoch,
+                'model_state':     raw_model.state_dict(),
+                'optimizer_state': optimizer.state_dict(),
+                'scheduler_state': scheduler.state_dict(),
+                'iter_num':        iter_num,
+                'best_val_ap':     best_val_ap,
+            }, ckpt_file)
+            _log(f"  -> Periodic checkpoint saved: {ckpt_file}")
 
         # ---- Validation ----
         if (epoch + 1) % args.eval_interval != 0:
