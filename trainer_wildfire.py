@@ -28,6 +28,7 @@ def _make_loader(dataset, batch_size, shuffle, num_workers, pin_memory=True):
         dataset, batch_size=batch_size, shuffle=shuffle,
         num_workers=num_workers, pin_memory=pin_memory,
         drop_last=shuffle,  # drop last incomplete batch only during training
+        persistent_workers=(num_workers > 0),
     )
 
 
