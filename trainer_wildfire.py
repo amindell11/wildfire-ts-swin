@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from datasets.wildfire import WildfireDataset, get_year_split
 from utils import FocalLoss, compute_binary_metrics, compute_ap
