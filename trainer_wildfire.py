@@ -45,21 +45,25 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
         pass
     pin_memory = _xm is None and str(device) != 'cpu'
 
-    logging.basicConfig(
-        filename=os.path.join(snapshot_path, "log.txt"),
-        level=logging.INFO,
-        format='[%(asctime)s.%(msecs)03d] %(message)s',
-        datefmt='%H:%M:%S',
-    )
-    # Use tqdm.write for console so progress bars aren't garbled
-    class _TqdmHandler(logging.StreamHandler):
-        def emit(self, record):
-            tqdm.write(self.format(record))
-    logging.getLogger().addHandler(_TqdmHandler())
-    logging.info(str(args))
+    # File-only logger — console output goes through tqdm.write() directly
+    log = logging.getLogger(f"trainer_{id(snapshot_path)}")
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    if not log.handlers:
+        _fh = logging.FileHandler(os.path.join(snapshot_path, "log.txt"))
+        _fh.setFormatter(logging.Formatter('[%(asctime)s.%(msecs)03d] %(message)s',
+                                           datefmt='%H:%M:%S'))
+        log.addHandler(_fh)
+
+    def _log(msg):
+        """Write to log file and print to console via tqdm so bars aren't garbled."""
+        log.info(msg)
+        tqdm.write(msg)
+
+    _log(str(args))
 
     train_years, val_years, test_years = get_year_split(args.data_fold_id)
-    logging.info(f"Train years: {train_years}  Val years: {val_years}  Test years: {test_years}")
+    _log(f"Train years: {train_years}  Val years: {val_years}  Test years: {test_years}")
 
     common_kwargs = dict(
         data_dir=args.data_dir,
@@ -81,7 +85,7 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
         stats_years=train_years,  # normalise with train stats
         n_leading_observations_test_adjustment=args.n_leading_observations_test_adjustment,
     )
-    logging.info(f"Train samples: {len(db_train)}  Val samples: {len(db_val)}")
+    _log(f"Train samples: {len(db_train)}  Val samples: {len(db_val)}")
 
     train_loader = _make_loader(db_train, args.batch_size, shuffle=True,
                                 num_workers=args.num_workers, pin_memory=pin_memory)
@@ -139,7 +143,7 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
             batch_bar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{lr_:.2e}")
 
         train_loss /= len(train_loader)
-        logging.info(f"Epoch {epoch:03d}  train_loss={train_loss:.4f}")
+        _log(f"Epoch {epoch:03d}  train_loss={train_loss:.4f}")
 
         scheduler.step()
 
@@ -178,7 +182,7 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
         ap = compute_ap(all_probs, all_gts)
 
         star = " *" if ap > best_val_ap else ""
-        logging.info(
+        _log(
             f"Epoch {epoch:03d}  val_loss={val_loss:.4f}  "
             f"AP={ap:.4f}  F1={metrics['f1']:.4f}  "
             f"Prec={metrics['precision']:.4f}  Rec={metrics['recall']:.4f}{star}"
@@ -201,11 +205,11 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
             best_val_ap = ap
             ckpt_path = os.path.join(snapshot_path, 'best_model.pth')
             torch.save(model.state_dict(), ckpt_path)
-            logging.info(f"  -> New best AP={best_val_ap:.4f}, saved to {ckpt_path}")
+            _log(f"  -> New best AP={best_val_ap:.4f}, saved to {ckpt_path}")
         else:
             ckpt_path = os.path.join(snapshot_path, 'last_model.pth')
             torch.save(model.state_dict(), ckpt_path)
 
     writer.close()
-    logging.info(f"Training finished. Best val AP: {best_val_ap:.4f}")
+    _log(f"Training finished. Best val AP: {best_val_ap:.4f}")
     return "Training Finished!"
