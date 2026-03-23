@@ -18,6 +18,7 @@ import argparse
 import os
 import random
 
+from notebooks.train_and_test_colab import N_LEADING_OBSERVATIONS
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
@@ -82,11 +83,11 @@ parser.add_argument('--accumulation-steps', type=int, default=None)
 
 args = parser.parse_args()
 
-# Inject in_chans into opts so yacs picks it up
-in_chans = args.n_leading_observations * N_FEATURES_PER_TIMESTEP
 extra_opts = [
-    'MODEL.SWIN.IN_CHANS', str(in_chans),
+    'MODEL.SWIN.IN_CHANS', str(N_FEATURES_PER_TIMESTEP),
+    'MODEL.SWIN.N_TIMESTEPS', str(args.n_leading_observations),
     'MODEL.PRETRAIN_CKPT', 'None',   # no compatible pretrain
+    
 ]
 args.opts = (args.opts or []) + extra_opts
 

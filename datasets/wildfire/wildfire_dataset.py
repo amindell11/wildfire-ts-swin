@@ -1,13 +1,13 @@
 """
-WildfireDataset: wraps FireSpreadDataset and flattens the temporal dimension into channels.
+WildfireDataset: wraps FireSpreadDataset and passes temporal frames intact for factored patch embedding.
 
-FireSpreadDataset returns x of shape (T, C, H, W). This wrapper reshapes it to (T*C, H, W)
-so the SwinUnet receives a single multi-channel image where time steps are concatenated as
-channel groups.
+FireSpreadDataset returns x of shape (T, C, H, W). This wrapper passes it through
+intact so the SwinUnet's FactoredPatchEmbed can process each timestep independently
+before fusing them temporally.
 
 Example with n_leading_observations=3:
   raw x shape : (3, 40, H, W)
-  output x    : (120, H, W)   — fed to SwinUnet with in_chans=120
+  output x    : (3, 40, H, W) — fed to SwinUnet with in_chans=40, n_timesteps=3
   output y    : (H, W)  long  — binary fire mask (0=no fire, 1=fire)
 """
 from typing import List, Optional
@@ -42,7 +42,7 @@ def get_year_split(data_fold_id: int):
 
 
 class WildfireDataset(Dataset):
-    """Thin wrapper around FireSpreadDataset that flattens (T, C, H, W) -> (T*C, H, W)."""
+    """Thin wrapper around FireSpreadDataset that passes temporal frames intact for factored patch embedding."""
 
     def __init__(
         self,
@@ -70,14 +70,13 @@ class WildfireDataset(Dataset):
             return_doy=False,
         )
         self.n_leading_observations = n_leading_observations
-        self.n_channels = n_leading_observations * N_FEATURES_PER_TIMESTEP
+        self.n_channels = N_FEATURES_PER_TIMESTEP
 
     def __len__(self):
         return len(self.inner)
 
     def __getitem__(self, index):
         x, y = self.inner[index]
-        # x: (T, C, H, W) -> (T*C, H, W)
-        x = x.flatten(0, 1)
+        # x: (T, C, H, W) — keep temporal dimension intact for factored patch
         # y: (H, W) long binary mask
         return x, y.long()

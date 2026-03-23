@@ -579,6 +579,58 @@ class PatchEmbed(nn.Module):
         return flops
 
 
+class FactoredPatchEmbed(nn.Module):
+    def __init__(self, img_size=224, patch_size=4, in_chans_per_step=40, n_timesteps=1, embed_dim=96, norm_layer=None):
+        super().__init__()
+        img_size = to_2tuple(img_size)
+        patch_size = to_2tuple(patch_size)
+        patches_resolution = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.patches_resolution = patches_resolution
+        self.num_patches = patches_resolution[0] * patches_resolution[1]
+        self.in_chans = in_chans_per_step  # kept for flops compat
+        self.embed_dim = embed_dim
+        self.n_timesteps = n_timesteps   
+        self.proj = nn.Conv2d(in_chans_per_step, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.temporal_mix = nn.Conv1d(n_timesteps, 1, kernel_size=1)
+        
+        if norm_layer is not None:
+            self.norm = norm_layer(embed_dim)
+        else:
+            self.norm = None
+
+    def forward(self, x):   
+        if x.dim() == 4:
+            B, C, H, W = x.shape
+            T=1
+            x = x.unsqueeze(1) 
+        else:
+            B, T, C, H, W = x.shape
+        assert H == self.img_size[0] and W == self.img_size[1], \
+            f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+            
+        x = x.reshape(B * T, C, H, W) # (B * T, C, H, W)
+        x = self.proj(x) # (B * T, embed_dim, Ph, Pw)
+        x = x.flatten(2) # (B * T, embed_dim, num_patches)
+        x = x. transpose(1, 2) # (B * T, num_patches, embed_dim)
+        x = x.reshape(B, T, self.num_patches, self.embed_dim) # (B, T, num_patches, embed_dim)
+        x = x.permute(0, 2, 3, 1) # (B, num_patches, embed_dim, T)
+
+        x = x.reshape(B * self.num_patches, self.embed_dim, T) # (B*num_patches, embed_dim, T)
+        x = x.permute(0, 2, 1) # (B*num_patches, T, embed_dim)
+
+        x = self.temporal_mix(x) # (B*num_patches, 1, embed_dim)
+        x = x.squeeze(1) # (B*num_patches, embed_dim)
+        x = x.reshape(B, self.num_patches, self.embed_dim) # (B, num_patches, embed_dim)
+
+        if self.norm is not None:
+            x = self.norm(x)
+        return x
+
+        
+    
+
 class SwinTransformerSys(nn.Module):
     r""" Swin Transformer
         A PyTorch impl of : `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows`  -
@@ -605,7 +657,7 @@ class SwinTransformerSys(nn.Module):
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
+    def __init__(self, img_size=224, patch_size=4, in_chans=3, n_timesteps=1, num_classes=1000,
                  embed_dim=96, depths=[2, 2, 2, 2], depths_decoder=[1, 2, 2, 2], num_heads=[3, 6, 12, 24],
                  window_size=7, mlp_ratio=4., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
@@ -629,8 +681,9 @@ class SwinTransformerSys(nn.Module):
         self.final_upsample = final_upsample
 
         # split image into non-overlapping patches
-        self.patch_embed = PatchEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
+        self.patch_embed = FactoredPatchEmbed(
+            img_size=img_size, patch_size=patch_size, in_chans_per_step=in_chans,
+            n_timesteps=n_timesteps, embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None)
         num_patches = self.patch_embed.num_patches
         patches_resolution = self.patch_embed.patches_resolution
