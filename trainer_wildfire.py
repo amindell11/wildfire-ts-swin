@@ -142,7 +142,7 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
 
         batch_bar = tqdm(train_loader, desc="  Train", unit="batch",
                          leave=False, ncols=90)
-        for x_batch, y_batch in batch_bar:
+        for batch_idx, (x_batch, y_batch) in enumerate(batch_bar):
             x_batch = x_batch.to(device)
             y_batch = y_batch.to(device)
 
@@ -155,8 +155,9 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
             if _xm is not None:
                 _xm.mark_step()
 
-            # Poly-style LR within epoch (in addition to cosine between epochs)
-            lr_ = args.base_lr * (1.0 - iter_num / max_iterations) ** 0.9
+            # Poly-style LR decay based on progress through total training
+            progress = (epoch * len(train_loader) + batch_idx) / max_iterations
+            lr_ = args.base_lr * max(0.0, 1.0 - progress) ** 0.9
             for pg in optimizer.param_groups:
                 pg['lr'] = lr_
 
