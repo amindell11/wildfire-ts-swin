@@ -10,6 +10,7 @@ MODEL:
     # IN_CHANS is set dynamically at runtime to n_leading_observations * 40.
     # Default below matches n_leading_observations=1.
     IN_CHANS: 40
+    USE_FACTORED_EMBED: True
     PATCH_SIZE: 4
     EMBED_DIM: 96
     DEPTHS: [ 2, 2, 2, 2 ]
