@@ -18,7 +18,6 @@ import argparse
 import os
 import random
 
-from notebooks.train_and_test_colab import N_LEADING_OBSERVATIONS
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
@@ -58,6 +57,10 @@ parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--n_gpu', type=int, default=1)
 parser.add_argument('--focal_gamma', type=float, default=2.0,
                     help='Focal loss gamma (focusing parameter). Paper uses 2.0.')
+parser.add_argument('--use_factored_embed', action='store_true', default=True,
+                    help='Use FactoredPatchEmbed (temporal mixer). Default: True.')
+parser.add_argument('--no_factored_embed', action='store_false', dest='use_factored_embed',
+                    help='Use original channel-stacked PatchEmbed instead.')
 
 # --- Swin config (passed through to yacs) ---
 parser.add_argument('--cfg', type=str,
@@ -83,11 +86,12 @@ parser.add_argument('--accumulation-steps', type=int, default=None)
 
 args = parser.parse_args()
 
+in_chans = N_FEATURES_PER_TIMESTEP
 extra_opts = [
-    'MODEL.SWIN.IN_CHANS', str(N_FEATURES_PER_TIMESTEP),
+    'MODEL.SWIN.IN_CHANS', str(in_chans),
     'MODEL.SWIN.N_TIMESTEPS', str(args.n_leading_observations),
+    'MODEL.SWIN.USE_FACTORED_EMBED', str(args.use_factored_embed),
     'MODEL.PRETRAIN_CKPT', 'None',   # no compatible pretrain
-    
 ]
 args.opts = (args.opts or []) + extra_opts
 

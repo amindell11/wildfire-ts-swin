@@ -31,6 +31,7 @@ class SwinUnet(nn.Module):
                                 patch_size=config.MODEL.SWIN.PATCH_SIZE,
                                 in_chans=config.MODEL.SWIN.IN_CHANS,
                                 n_timesteps=getattr(config.MODEL.SWIN, 'N_TIMESTEPS', 1),
+                                use_factored_embed=getattr(config.MODEL.SWIN, 'USE_FACTORED_EMBED', True),
                                 num_classes=self.num_classes,
                                 embed_dim=config.MODEL.SWIN.EMBED_DIM,
                                 depths=config.MODEL.SWIN.DEPTHS,

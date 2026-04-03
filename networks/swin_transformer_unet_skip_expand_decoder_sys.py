@@ -657,7 +657,8 @@ class SwinTransformerSys(nn.Module):
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=3, n_timesteps=1, num_classes=1000,
+    def __init__(self, img_size=224, patch_size=4, in_chans=3, n_timesteps=1,
+                 use_factored_embed=True, num_classes=1000,
                  embed_dim=96, depths=[2, 2, 2, 2], depths_decoder=[1, 2, 2, 2], num_heads=[3, 6, 12, 24],
                  window_size=7, mlp_ratio=4., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
@@ -681,10 +682,18 @@ class SwinTransformerSys(nn.Module):
         self.final_upsample = final_upsample
 
         # split image into non-overlapping patches
-        self.patch_embed = FactoredPatchEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans_per_step=in_chans,
-            n_timesteps=n_timesteps, embed_dim=embed_dim,
-            norm_layer=norm_layer if self.patch_norm else None)
+        if use_factored_embed and n_timesteps >= 1:
+            self.patch_embed = FactoredPatchEmbed(
+                img_size=img_size, patch_size=patch_size, in_chans_per_step=in_chans,
+                n_timesteps=n_timesteps, embed_dim=embed_dim,
+                norm_layer=norm_layer if self.patch_norm else None)
+        else:
+            # Original channel-stacked embedding: in_chans = n_timesteps * channels_per_step
+            total_chans = in_chans * n_timesteps if n_timesteps > 1 else in_chans
+            self.patch_embed = PatchEmbed(
+                img_size=img_size, patch_size=patch_size, in_chans=total_chans,
+                embed_dim=embed_dim,
+                norm_layer=norm_layer if self.patch_norm else None)
         num_patches = self.patch_embed.num_patches
         patches_resolution = self.patch_embed.patches_resolution
         self.patches_resolution = patches_resolution

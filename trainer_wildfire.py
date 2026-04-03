@@ -65,11 +65,14 @@ def trainer_wildfire(args, model, snapshot_path, device=None):
     train_years, val_years, test_years = get_year_split(args.data_fold_id)
     _log(f"Train years: {train_years}  Val years: {val_years}  Test years: {test_years}")
 
+    use_factored = getattr(args, 'use_factored_embed', True)
+
     common_kwargs = dict(
         data_dir=args.data_dir,
         n_leading_observations=args.n_leading_observations,
         crop_side_length=args.crop_side_length,
         load_from_hdf5=args.load_from_hdf5,
+        use_factored_embed=use_factored,
     )
 
     db_train = WildfireDataset(

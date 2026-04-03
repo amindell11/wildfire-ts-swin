@@ -1,13 +1,14 @@
 """
-WildfireDataset: wraps FireSpreadDataset and passes temporal frames intact for factored patch embedding.
+WildfireDataset: wraps FireSpreadDataset for SwinUnet training.
 
-FireSpreadDataset returns x of shape (T, C, H, W). This wrapper passes it through
-intact so the SwinUnet's FactoredPatchEmbed can process each timestep independently
-before fusing them temporally.
+FireSpreadDataset returns x of shape (T, C, H, W). This wrapper either:
+  - Passes it through intact for FactoredPatchEmbed (use_factored_embed=True)
+  - Flattens to (T*C, H, W) for the standard PatchEmbed (use_factored_embed=False)
 
 Example with n_leading_observations=3:
   raw x shape : (3, 40, H, W)
-  output x    : (3, 40, H, W) — fed to SwinUnet with in_chans=40, n_timesteps=3
+  factored    : (3, 40, H, W) — fed to SwinUnet with in_chans=40, n_timesteps=3
+  flattened   : (120, H, W)   — fed to SwinUnet with in_chans=120
   output y    : (H, W)  long  — binary fire mask (0=no fire, 1=fire)
 """
 from typing import List, Optional
@@ -42,7 +43,7 @@ def get_year_split(data_fold_id: int):
 
 
 class WildfireDataset(Dataset):
-    """Thin wrapper around FireSpreadDataset that passes temporal frames intact for factored patch embedding."""
+    """Thin wrapper around FireSpreadDataset that handles temporal dimension formatting."""
 
     def __init__(
         self,
@@ -55,6 +56,7 @@ class WildfireDataset(Dataset):
         stats_years: List[int],
         n_leading_observations_test_adjustment: Optional[int] = None,
         features_to_keep: Optional[List[int]] = None,
+        use_factored_embed: bool = True,
     ):
         self.inner = FireSpreadDataset(
             data_dir=data_dir,
@@ -71,12 +73,18 @@ class WildfireDataset(Dataset):
         )
         self.n_leading_observations = n_leading_observations
         self.n_channels = N_FEATURES_PER_TIMESTEP
+        self.use_factored_embed = use_factored_embed
 
     def __len__(self):
         return len(self.inner)
 
     def __getitem__(self, index):
         x, y = self.inner[index]
-        # x: (T, C, H, W) — keep temporal dimension intact for factored patch
-        # y: (H, W) long binary mask
-        return x, y.long()
+        # x: (T, C, H, W) from FireSpreadDataset
+        if self.use_factored_embed:
+            # keep temporal dimension intact for FactoredPatchEmbed
+            return x, y.long()
+        else:
+            # flatten to (T*C, H, W) for standard PatchEmbed
+            T, C, H, W = x.shape
+            return x.reshape(T * C, H, W), y.long()
