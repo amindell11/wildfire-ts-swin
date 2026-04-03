@@ -90,7 +90,6 @@ in_chans = N_FEATURES_PER_TIMESTEP
 extra_opts = [
     'MODEL.SWIN.IN_CHANS', str(in_chans),
     'MODEL.SWIN.N_TIMESTEPS', str(args.n_leading_observations),
-    'MODEL.SWIN.USE_FACTORED_EMBED', str(args.use_factored_embed),
     'MODEL.PRETRAIN_CKPT', 'None',   # no compatible pretrain
 ]
 args.opts = (args.opts or []) + extra_opts
@@ -116,7 +115,8 @@ if __name__ == '__main__':
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    net = SwinUnet(config, img_size=config.DATA.IMG_SIZE, num_classes=2).cuda()
+    net = SwinUnet(config, img_size=config.DATA.IMG_SIZE, num_classes=2,
+                   use_factored_embed=args.use_factored_embed).cuda()
     # No pretrained weights — patch embed channel count differs from ImageNet
     print(f"Model in_chans={in_chans}  (n_leading_observations={args.n_leading_observations} × 40 features)")
     print(f"Model parameters: {sum(p.numel() for p in net.parameters()) / 1e6:.1f}M")
