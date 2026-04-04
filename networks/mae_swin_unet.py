@@ -1,16 +1,26 @@
 """
 SimMIM-style self-supervised pre-training wrapper for SwinTransformerSys.
 
-Uses channel-group masking: 5 semantic groups of channels are independently
-masked per spatial patch. The model must reconstruct masked channel-groups
-from the visible ones, learning cross-feature spatial relationships.
+Uses per-feature channel masking: each feature is independently masked across
+the entire image. The model must reconstruct masked features from the visible
+ones, learning cross-feature spatial relationships.
 
-Channel groups (post-preprocessing, 40 channels):
-  Group 0 - Spectral/Veg  [5ch]:  0-4   (M11, I2, I1, NDVI, EVI2)
-  Group 1 - Weather       [7ch]:  5-11  (precip, wind, temp, ERC, humidity)
-  Group 2 - Terrain       [3ch]:  12-14 (slope, aspect, elevation)
-  Group 3 - Land+Drought [18ch]:  15-32 (PDSI, 17x landcover one-hot)
-  Group 4 - Forecast+AF   [7ch]:  33-39 (5x forecast, AF, binary_AF)
+Landcover (17 one-hot channels) is treated as a single maskable unit since
+the channels encode one categorical variable.
+
+Maskable units (24 total, mapping to 40 post-preprocessing channels):
+  0:  M11 (ch 0)          12: Slope (ch 12)
+  1:  I2 (ch 1)           13: Aspect (ch 13)
+  2:  I1 (ch 2)           14: Elevation (ch 14)
+  3:  NDVI (ch 3)         15: PDSI (ch 15)
+  4:  EVI2 (ch 4)         16: Landcover 17x one-hot (ch 16-32)
+  5:  Precipitation (ch 5) 17: Fcst precip (ch 33)
+  6:  Wind speed (ch 6)   18: Fcst wind speed (ch 34)
+  7:  Wind direction (ch 7) 19: Fcst wind dir (ch 35)
+  8:  Temp min (ch 8)     20: Fcst temperature (ch 36)
+  9:  Temp max (ch 9)     21: Fcst humidity (ch 37)
+  10: ERC (ch 10)         22: Active fire (ch 38)
+  11: Humidity (ch 11)    23: Binary AF (ch 39)
 """
 import torch
 import torch.nn as nn
@@ -18,15 +28,24 @@ import torch.nn.functional as F
 
 from .swin_transformer_unet_skip_expand_decoder_sys import SwinTransformerSys
 
-# Channel indices for each semantic group (post-preprocessing 40-channel input)
-CHANNEL_GROUPS = [
-    list(range(0, 5)),     # spectral / vegetation
-    list(range(5, 12)),    # weather
-    list(range(12, 15)),   # terrain
-    list(range(15, 33)),   # landcover + drought
-    list(range(33, 40)),   # forecast + active fire
+# Each maskable unit maps to one or more channel indices in the 40-channel input.
+# Landcover (17 one-hot) is one unit; everything else is a single channel.
+MASK_UNITS = (
+    [[i] for i in range(16)]           # ch 0-15: individual features
+    + [list(range(16, 33))]            # ch 16-32: landcover one-hot (1 unit)
+    + [[i] for i in range(33, 40)]     # ch 33-39: individual features
+)
+N_MASK_UNITS = len(MASK_UNITS)  # 24
+
+# Feature names for visualization / logging
+MASK_UNIT_NAMES = [
+    'M11', 'I2', 'I1', 'NDVI', 'EVI2',
+    'Precip', 'Wind Spd', 'Wind Dir', 'Temp Min', 'Temp Max', 'ERC', 'Humidity',
+    'Slope', 'Aspect', 'Elevation', 'PDSI',
+    'Landcover',
+    'Fcst Precip', 'Fcst Wind Spd', 'Fcst Wind Dir', 'Fcst Temp', 'Fcst Humidity',
+    'Active Fire', 'Binary AF',
 ]
-N_GROUPS = len(CHANNEL_GROUPS)
 
 
 class SimMIMSwinUnet(nn.Module):
@@ -77,14 +96,12 @@ class SimMIMSwinUnet(nn.Module):
         )
 
     def generate_mask(self, B, device):
-        """Generate a full-image channel-group mask.
+        """Generate a per-feature full-image mask.
 
-        Each of the 5 channel groups is independently masked across the
-        entire image with probability self.mask_prob. At least 1 group
-        must be masked and at least 1 visible per sample.
-
-        This forces the model to learn cross-feature relationships rather
-        than spatially interpolating from neighboring patches.
+        Each of the 24 maskable units (individual features, except landcover
+        which is one unit of 17 one-hot channels) is independently masked
+        across the entire image with probability self.mask_prob. At least 1
+        unit must be masked and at least 1 visible per sample.
 
         Returns:
             mask_pixels: (B, 40, H, W) float tensor — 1 = masked, 0 = visible
@@ -92,22 +109,20 @@ class SimMIMSwinUnet(nn.Module):
         H = self.patches_h * self.patch_size
         W = self.patches_w * self.patch_size
 
-        # (B, N_GROUPS) Bernoulli mask — entire group on or off per sample
-        group_mask = torch.rand(B, N_GROUPS, device=device) < self.mask_prob
+        # (B, N_MASK_UNITS) Bernoulli mask — per feature
+        unit_mask = torch.rand(B, N_MASK_UNITS, device=device) < self.mask_prob
 
         # Ensure at least 1 masked and 1 visible per sample
         for b in range(B):
-            if group_mask[b].all():
-                # All masked — unmask one random group
-                group_mask[b, torch.randint(N_GROUPS, (1,), device=device)] = False
-            if (~group_mask[b]).all():
-                # All visible — mask one random group
-                group_mask[b, torch.randint(N_GROUPS, (1,), device=device)] = True
+            if unit_mask[b].all():
+                unit_mask[b, torch.randint(N_MASK_UNITS, (1,), device=device)] = False
+            if (~unit_mask[b]).all():
+                unit_mask[b, torch.randint(N_MASK_UNITS, (1,), device=device)] = True
 
-        # Expand groups to channels: (B, N_GROUPS) → (B, 40, H, W)
+        # Expand units to channels: (B, N_MASK_UNITS) → (B, 40)
         channel_mask = torch.zeros(B, self.in_chans, device=device)
-        for g, ch_indices in enumerate(CHANNEL_GROUPS):
-            channel_mask[:, ch_indices] = group_mask[:, g:g+1].float()
+        for u, ch_indices in enumerate(MASK_UNITS):
+            channel_mask[:, ch_indices] = unit_mask[:, u:u+1].float()
 
         # Broadcast spatially
         mask_pixels = channel_mask[:, :, None, None].expand(B, self.in_chans, H, W)
