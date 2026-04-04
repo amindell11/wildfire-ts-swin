@@ -77,46 +77,41 @@ class SimMIMSwinUnet(nn.Module):
         )
 
     def generate_mask(self, B, device):
-        """Generate a per-channel-group, per-patch binary mask.
+        """Generate a full-image channel-group mask.
 
-        For each patch, each of the 5 channel groups is independently masked
-        with probability self.mask_prob. At least 1 group is masked and at
-        least 1 is visible (resampled if all-same).
+        Each of the 5 channel groups is independently masked across the
+        entire image with probability self.mask_prob. At least 1 group
+        must be masked and at least 1 visible per sample.
+
+        This forces the model to learn cross-feature relationships rather
+        than spatially interpolating from neighboring patches.
 
         Returns:
             mask_pixels: (B, 40, H, W) float tensor — 1 = masked, 0 = visible
         """
-        pH, pW = self.patches_h, self.patches_w
+        H = self.patches_h * self.patch_size
+        W = self.patches_w * self.patch_size
 
-        # (B, N_GROUPS, pH * pW) Bernoulli mask
-        group_mask = torch.rand(B, N_GROUPS, pH * pW, device=device) < self.mask_prob
+        # (B, N_GROUPS) Bernoulli mask — entire group on or off per sample
+        group_mask = torch.rand(B, N_GROUPS, device=device) < self.mask_prob
 
-        # Ensure at least 1 masked and 1 visible per patch
-        all_masked = group_mask.all(dim=1)    # (B, pH*pW)
-        all_visible = (~group_mask).all(dim=1)
+        # Ensure at least 1 masked and 1 visible per sample
         for b in range(B):
-            # Fix patches where all groups are masked: unmask one random group
-            bad = all_masked[b].nonzero(as_tuple=True)[0]
-            if len(bad) > 0:
-                rand_groups = torch.randint(N_GROUPS, (len(bad),), device=device)
-                group_mask[b, rand_groups, bad] = False
-            # Fix patches where all groups are visible: mask one random group
-            bad = all_visible[b].nonzero(as_tuple=True)[0]
-            if len(bad) > 0:
-                rand_groups = torch.randint(N_GROUPS, (len(bad),), device=device)
-                group_mask[b, rand_groups, bad] = True
+            if group_mask[b].all():
+                # All masked — unmask one random group
+                group_mask[b, torch.randint(N_GROUPS, (1,), device=device)] = False
+            if (~group_mask[b]).all():
+                # All visible — mask one random group
+                group_mask[b, torch.randint(N_GROUPS, (1,), device=device)] = True
 
-        # Expand groups to channels: (B, N_GROUPS, pH*pW) → (B, 40, pH, pW)
-        channel_mask = torch.zeros(B, self.in_chans, pH * pW, device=device)
+        # Expand groups to channels: (B, N_GROUPS) → (B, 40, H, W)
+        channel_mask = torch.zeros(B, self.in_chans, device=device)
         for g, ch_indices in enumerate(CHANNEL_GROUPS):
-            channel_mask[:, ch_indices, :] = group_mask[:, g:g+1, :].float()
+            channel_mask[:, ch_indices] = group_mask[:, g:g+1].float()
 
-        channel_mask = channel_mask.reshape(B, self.in_chans, pH, pW)
-
-        # Upscale to pixel space: (B, 40, H, W)
-        mask_pixels = channel_mask.repeat_interleave(self.patch_size, dim=2) \
-                                  .repeat_interleave(self.patch_size, dim=3)
-        return mask_pixels
+        # Broadcast spatially
+        mask_pixels = channel_mask[:, :, None, None].expand(B, self.in_chans, H, W)
+        return mask_pixels.contiguous()
 
     def forward(self, x, mask=None):
         """
