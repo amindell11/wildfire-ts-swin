@@ -122,12 +122,25 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     checkpoint_interval = getattr(args, 'checkpoint_interval', 20)
-    best_loss = float('inf')
+    best_val_loss = float('inf')
+    start_epoch = 0
     writer = SummaryWriter(os.path.join(snapshot_path, 'pretrain_log'))
 
-    best_val_loss = float('inf')
+    # Auto-resume from latest checkpoint (disable with args.no_resume=True)
+    import glob as _glob
+    ckpts = sorted(_glob.glob(os.path.join(snapshot_path, 'pretrain_ckpt_epoch*.pth')))
+    if ckpts and not getattr(args, 'no_resume', False):
+        latest_ckpt = ckpts[-1]
+        _log(f"Resuming from checkpoint: {latest_ckpt}")
+        ckpt = torch.load(latest_ckpt, map_location=device)
+        model.load_state_dict(ckpt['model_state'])
+        optimizer.load_state_dict(ckpt['optimizer_state'])
+        scheduler.load_state_dict(ckpt['scheduler_state'])
+        start_epoch = ckpt['epoch'] + 1
+        best_val_loss = ckpt.get('best_val_loss', ckpt.get('best_loss', float('inf')))
+        _log(f"  -> Resumed at epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
 
-    epoch_bar = tqdm(range(max_epochs), desc="Pre-train", unit="ep", ncols=90)
+    epoch_bar = tqdm(range(start_epoch, max_epochs), desc="Pre-train", unit="ep", ncols=90)
     for epoch in epoch_bar:
         # ---- Train ----
         model.train()
