@@ -77,16 +77,29 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
 
     _log(str(args))
 
-    # Dataset
-    dataset = PretrainDataset(
+    # Dataset with train/val split
+    full_dataset = PretrainDataset(
         tif_dir=args.tif_dir,
         crop_side_length=getattr(args, 'crop_side_length', 128),
         stats_years=getattr(args, 'stats_years', (2020, 2021)),
     )
-    _log(f"Pre-training samples: {len(dataset)}")
+    val_frac = getattr(args, 'val_frac', 0.1)
+    n_val = max(1, int(len(full_dataset) * val_frac))
+    n_train = len(full_dataset) - n_val
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        full_dataset, [n_train, n_val],
+        generator=torch.Generator().manual_seed(42),
+    )
+    _log(f"Pre-training samples: {n_train} train, {n_val} val")
 
-    loader = _make_loader(dataset, args.batch_size, args.num_workers,
-                          pin_memory=pin_memory)
+    train_loader = _make_loader(train_dataset, args.batch_size, args.num_workers,
+                                pin_memory=pin_memory)
+    val_loader = DataLoader(
+        val_dataset, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=pin_memory,
+        drop_last=False,
+        persistent_workers=(args.num_workers > 0),
+    )
 
     # Optimizer
     optimizer = optim.AdamW(
@@ -112,12 +125,15 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
     best_loss = float('inf')
     writer = SummaryWriter(os.path.join(snapshot_path, 'pretrain_log'))
 
+    best_val_loss = float('inf')
+
     epoch_bar = tqdm(range(max_epochs), desc="Pre-train", unit="ep", ncols=90)
     for epoch in epoch_bar:
+        # ---- Train ----
         model.train()
-        epoch_loss = 0.0
+        train_loss = 0.0
 
-        batch_bar = tqdm(loader, desc="  Batch", unit="batch", leave=False, ncols=90)
+        batch_bar = tqdm(train_loader, desc="  Train", unit="batch", leave=False, ncols=90)
         for x_batch in batch_bar:
             x_batch = x_batch.to(device)
 
@@ -127,26 +143,38 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
             loss.backward()
             optimizer.step()
 
-            epoch_loss += loss.item()
+            train_loss += loss.item()
             batch_bar.set_postfix(loss=f"{loss.item():.4f}",
                                  lr=f"{optimizer.param_groups[0]['lr']:.2e}")
 
         scheduler.step()
+        train_loss /= len(train_loader)
 
-        epoch_loss /= len(loader)
-        writer.add_scalar('pretrain/loss', epoch_loss, epoch)
+        # ---- Validation ----
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x_batch in val_loader:
+                x_batch = x_batch.to(device)
+                loss, _, _ = model(x_batch)
+                val_loss += loss.item()
+        val_loss /= len(val_loader)
+
+        writer.add_scalar('pretrain/train_loss', train_loss, epoch)
+        writer.add_scalar('pretrain/val_loss', val_loss, epoch)
         writer.add_scalar('pretrain/lr', optimizer.param_groups[0]['lr'], epoch)
 
         star = ""
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             torch.save(model.get_encoder_decoder_state_dict(),
                        os.path.join(snapshot_path, 'pretrain_best.pth'))
             star = " <-- best"
 
-        _log(f"Epoch {epoch:03d}  loss={epoch_loss:.6f}  "
+        _log(f"Epoch {epoch:03d}  train={train_loss:.6f}  val={val_loss:.6f}  "
              f"lr={optimizer.param_groups[0]['lr']:.2e}{star}")
-        epoch_bar.set_postfix(loss=f"{epoch_loss:.6f}", best=f"{best_loss:.6f}")
+        epoch_bar.set_postfix(train=f"{train_loss:.6f}", val=f"{val_loss:.6f}",
+                              best=f"{best_val_loss:.6f}")
 
         # Periodic checkpoint + visualization
         if (epoch + 1) % checkpoint_interval == 0:
@@ -156,14 +184,13 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
                 'model_state': model.state_dict(),
                 'optimizer_state': optimizer.state_dict(),
                 'scheduler_state': scheduler.state_dict(),
-                'best_loss': best_loss,
+                'best_val_loss': best_val_loss,
             }, ckpt_path)
             _log(f"  -> Checkpoint saved: {ckpt_path}")
 
-            # Visualize reconstruction on one sample
-            model.eval()
+            # Visualize reconstruction on one val sample
             with torch.no_grad():
-                vis_x = next(iter(loader))[:1].to(device)
+                vis_x = next(iter(val_loader))[:1].to(device)
                 vis_loss, vis_pred, vis_mask = model(vis_x)
                 x_masked_vis = vis_x * (1.0 - vis_mask)
                 _log_reconstruction_vis(
@@ -174,12 +201,11 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
                     vis_mask[0].cpu(),
                     epoch,
                 )
-            model.train()
 
     # Save final transferable weights
     final_path = os.path.join(snapshot_path, 'pretrain_encoder_decoder.pth')
     torch.save(model.get_encoder_decoder_state_dict(), final_path)
-    _log(f"Pre-training done. Best loss: {best_loss:.6f}")
+    _log(f"Pre-training done. Best val loss: {best_val_loss:.6f}")
     _log(f"Transferable weights saved to: {final_path}")
 
     writer.close()
