@@ -132,7 +132,7 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
     if ckpts and not getattr(args, 'no_resume', False):
         latest_ckpt = ckpts[-1]
         _log(f"Resuming from checkpoint: {latest_ckpt}")
-        ckpt = torch.load(latest_ckpt, map_location=device)
+        ckpt = torch.load(latest_ckpt, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model_state'])
         optimizer.load_state_dict(ckpt['optimizer_state'])
         scheduler.load_state_dict(ckpt['scheduler_state'])
