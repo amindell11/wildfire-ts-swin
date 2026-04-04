@@ -16,6 +16,35 @@ from tqdm.auto import tqdm
 
 from datasets.wildfire.pretrain_dataset import PretrainDataset
 
+# Channels to visualize (one per semantic group, picked for interpretability)
+_VIS_CHANNELS = {
+    'NDVI': 3,
+    'Temperature': 9,
+    'Elevation': 14,
+    'Landcover': 15,
+    'Forecast_Temp': 37,
+}
+
+
+def _log_reconstruction_vis(writer, x_orig, x_masked, pred, mask, epoch):
+    """Log a side-by-side visualization of original / masked / reconstructed for one sample."""
+    # x_orig, x_masked, pred, mask: all (40, H, W) tensors on CPU
+    for name, ch in _VIS_CHANNELS.items():
+        orig_ch = x_orig[ch].unsqueeze(0)      # (1, H, W)
+        masked_ch = x_masked[ch].unsqueeze(0)
+        pred_ch = pred[ch].unsqueeze(0)
+
+        # Normalize each to [0, 1] for display
+        def _norm(t):
+            lo, hi = t.min(), t.max()
+            if hi - lo < 1e-8:
+                return torch.zeros_like(t)
+            return (t - lo) / (hi - lo)
+
+        # Stack as 3-row image: original | masked input | reconstruction
+        grid = torch.cat([_norm(orig_ch), _norm(masked_ch), _norm(pred_ch)], dim=1)  # (1, 3*H, W)
+        writer.add_image(f'pretrain_vis/{name}', grid, epoch)
+
 
 def _make_loader(dataset, batch_size, num_workers, pin_memory=True):
     return DataLoader(
@@ -119,7 +148,7 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
              f"lr={optimizer.param_groups[0]['lr']:.2e}{star}")
         epoch_bar.set_postfix(loss=f"{epoch_loss:.6f}", best=f"{best_loss:.6f}")
 
-        # Periodic checkpoint
+        # Periodic checkpoint + visualization
         if (epoch + 1) % checkpoint_interval == 0:
             ckpt_path = os.path.join(snapshot_path, f'pretrain_ckpt_epoch{epoch:03d}.pth')
             torch.save({
@@ -130,6 +159,22 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
                 'best_loss': best_loss,
             }, ckpt_path)
             _log(f"  -> Checkpoint saved: {ckpt_path}")
+
+            # Visualize reconstruction on one sample
+            model.eval()
+            with torch.no_grad():
+                vis_x = next(iter(loader))[:1].to(device)
+                vis_loss, vis_pred, vis_mask = model(vis_x)
+                x_masked_vis = vis_x * (1.0 - vis_mask)
+                _log_reconstruction_vis(
+                    writer,
+                    vis_x[0].cpu(),
+                    x_masked_vis[0].cpu(),
+                    vis_pred[0].cpu(),
+                    vis_mask[0].cpu(),
+                    epoch,
+                )
+            model.train()
 
     # Save final transferable weights
     final_path = os.path.join(snapshot_path, 'pretrain_encoder_decoder.pth')
