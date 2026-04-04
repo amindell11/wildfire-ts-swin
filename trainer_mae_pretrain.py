@@ -250,4 +250,4 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
     _log(f"Transferable weights saved to: {final_path}")
 
     writer.close()
-    return best_loss
+    return best_val_loss
