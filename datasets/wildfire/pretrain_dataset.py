@@ -26,8 +26,10 @@ class PretrainDataset(Dataset):
         tif_dir: str,
         crop_side_length: int = 128,
         stats_years: Tuple[int, int] = (2020, 2021),
+        crops_per_tif: int = 1,
     ):
         self.crop_side_length = crop_side_length
+        self.crops_per_tif = crops_per_tif
 
         self.tif_paths = sorted(glob.glob(f"{tif_dir}/**/*.tif", recursive=True))
         if not self.tif_paths:
@@ -54,10 +56,11 @@ class PretrainDataset(Dataset):
         self.one_hot_matrix = torch.eye(17)
 
     def __len__(self):
-        return len(self.tif_paths)
+        return len(self.tif_paths) * self.crops_per_tif
 
     def __getitem__(self, index):
-        with rasterio.open(self.tif_paths[index], 'r') as ds:
+        tif_index = index // self.crops_per_tif
+        with rasterio.open(self.tif_paths[tif_index], 'r') as ds:
             img = ds.read().astype(np.float32)  # (19, H, W)
 
         # Add temporal dimension: (1, 19, H, W)

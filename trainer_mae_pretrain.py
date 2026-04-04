@@ -78,19 +78,47 @@ def trainer_mae_pretrain(args, model, snapshot_path, device=None):
     _log(str(args))
 
     # Dataset with train/val split
-    full_dataset = PretrainDataset(
+    # Split by TIF files first, then apply crops_per_tif
+    crops_per_tif = getattr(args, 'crops_per_tif', 1)
+    base_dataset = PretrainDataset(
         tif_dir=args.tif_dir,
         crop_side_length=getattr(args, 'crop_side_length', 128),
         stats_years=getattr(args, 'stats_years', (2020, 2021)),
+        crops_per_tif=1,  # 1 crop for splitting purposes
     )
+    n_tifs = len(base_dataset)
     val_frac = getattr(args, 'val_frac', 0.1)
-    n_val = max(1, int(len(full_dataset) * val_frac))
-    n_train = len(full_dataset) - n_val
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        full_dataset, [n_train, n_val],
-        generator=torch.Generator().manual_seed(42),
+    n_val_tifs = max(1, int(n_tifs * val_frac))
+    n_train_tifs = n_tifs - n_val_tifs
+
+    # Split TIF indices
+    gen = torch.Generator().manual_seed(42)
+    all_indices = torch.randperm(n_tifs, generator=gen).tolist()
+    train_tif_indices = sorted(all_indices[:n_train_tifs])
+    val_tif_indices = sorted(all_indices[n_train_tifs:])
+
+    # Build train dataset with multiple crops, val with 1 crop
+    train_tif_paths = [base_dataset.tif_paths[i] for i in train_tif_indices]
+    val_tif_paths = [base_dataset.tif_paths[i] for i in val_tif_indices]
+
+    train_dataset = PretrainDataset(
+        tif_dir=args.tif_dir,
+        crop_side_length=getattr(args, 'crop_side_length', 128),
+        stats_years=getattr(args, 'stats_years', (2020, 2021)),
+        crops_per_tif=crops_per_tif,
     )
-    _log(f"Pre-training samples: {n_train} train, {n_val} val")
+    train_dataset.tif_paths = train_tif_paths
+
+    val_dataset = PretrainDataset(
+        tif_dir=args.tif_dir,
+        crop_side_length=getattr(args, 'crop_side_length', 128),
+        stats_years=getattr(args, 'stats_years', (2020, 2021)),
+        crops_per_tif=1,
+    )
+    val_dataset.tif_paths = val_tif_paths
+
+    _log(f"Pre-training: {n_train_tifs} train TIFs x {crops_per_tif} crops = {len(train_dataset)} samples, "
+         f"{n_val_tifs} val TIFs = {len(val_dataset)} samples")
 
     train_loader = _make_loader(train_dataset, args.batch_size, args.num_workers,
                                 pin_memory=pin_memory)
