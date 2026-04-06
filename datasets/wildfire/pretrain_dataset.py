@@ -47,12 +47,13 @@ class PretrainDataset(Dataset):
             raise FileNotFoundError(
                 f"No location folders with 2+ TIF files found under {tif_dir}")
 
-        # Filter out pairs where either TIF is too small
+        # Filter out pairs where either TIF is too small or has wrong band count
         valid_pairs = []
         for p1, p2 in self.location_pairs:
             try:
                 with rasterio.open(p1, 'r') as ds1, rasterio.open(p2, 'r') as ds2:
-                    if (ds1.height >= crop_side_length and ds1.width >= crop_side_length
+                    if (ds1.count == 23 and ds2.count == 23
+                            and ds1.height >= crop_side_length and ds1.width >= crop_side_length
                             and ds2.height >= crop_side_length and ds2.width >= crop_side_length):
                         valid_pairs.append((p1, p2))
             except Exception:
