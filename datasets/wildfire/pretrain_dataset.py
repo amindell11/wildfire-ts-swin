@@ -60,7 +60,9 @@ class PretrainDataset(Dataset):
                 pass
         skipped = len(self.location_pairs) - len(valid_pairs)
         if skipped > 0:
-            warnings.warn(f"Skipped {skipped} locations (TIFs too small or unreadable)")
+            warnings.warn(f"Skipped {skipped} locations (TIFs too small, wrong bands, or unreadable)")
+        print(f"PretrainDataset: {len(valid_pairs)} valid locations "
+              f"({skipped} skipped) x {crops_per_location} crops = {len(valid_pairs) * crops_per_location} samples")
         self.location_pairs = valid_pairs
 
         means, stds, _ = get_means_stds_missing_values(list(stats_years))
